@@ -1,34 +1,18 @@
 #pragma once
 
-#include "../cpp-template-utils/compiler/compiler_warnings_control.h"
-
-DISABLE_COMPILER_WARNINGS
-#include <QFile>
-#include <QNetworkAccessManager>
-#include <QString>
-RESTORE_COMPILER_WARNINGS
-
+#include <filesystem>
 #include <functional>
+#include <string>
 #include <vector>
 
-#if defined _WIN32
-#define UPDATE_FILE_EXTENSION QLatin1String(".exe")
-#elif defined __APPLE__
-#define UPDATE_FILE_EXTENSION QLatin1String(".dmg")
-#else
-#define UPDATE_FILE_EXTENSION QLatin1String(".AppImage")
-#endif
-
-class CAutoUpdaterGithub final : public QObject
+class CAutoUpdaterGithub final
 {
 public:
-	using QObject::QObject;
-
 	struct VersionEntry {
-		QString versionString;
-		QString versionChanges;
-		QString date;
-		QString versionUpdateUrl;
+		std::string versionString;
+		std::string versionChanges;
+		std::string date;
+		std::string versionUpdateUrl;
 		bool isPrerelease = false;
 	};
 
@@ -40,36 +24,33 @@ public:
 		virtual void onUpdateAvailable(const ChangeLog& changelog) = 0;
 		virtual void onUpdateDownloadProgress(float percentageDownloaded) = 0;
 		virtual void onUpdateDownloadFinished() = 0;
-		virtual void onUpdateError(const QString& errorMessage) = 0;
+		virtual void onUpdateError(const std::string& errorMessage) = 0;
 	};
 
 public:
-	// If the string comparison functior is not supplied, case-insensitive natural sorting is used (using QCollator)
-	CAutoUpdaterGithub(QString githubRepositoryName, // Name of the repo, e. g. VioletGiraffe/github-releases-autoupdater
-					   QString currentVersionString,
-					   const std::function<bool (const QString&, const QString&)>& versionStringComparatorLessThan = {});
+	// If the string comparison function is not supplied, case-insensitive natural sorting is used.
+	CAutoUpdaterGithub(std::string githubRepositoryName, // Name of the repo, e. g. VioletGiraffe/github-releases-autoupdater
+					   std::string currentVersionString,
+					   std::function<bool(const std::string&, const std::string&)> versionStringComparatorLessThan = {});
 
+	~CAutoUpdaterGithub() = default;
+
+	CAutoUpdaterGithub(const CAutoUpdaterGithub& other) = delete;
 	CAutoUpdaterGithub& operator=(const CAutoUpdaterGithub& other) = delete;
 
 	void setUpdateStatusListener(UpdateStatusListener* listener);
 
 	void checkForUpdates();
-	void downloadAndInstallUpdate(const QString& updateUrl);
+	void downloadAndInstallUpdate(const std::string& updateUrl);
 
 private:
-	void updateCheckRequestFinished();
-	void updateDownloaded();
-	void onDownloadProgress(qint64 bytesReceived, qint64 bytesTotal);
-	void onNewDataDownloaded();
+	void notifyError(const std::string& errorMessage) const;
+	std::filesystem::path buildDownloadPath() const;
 
 private:
-	QFile _downloadedBinaryFile;
-	const QString _repoName;
-	const QString _currentVersionString;
-	const std::function<bool (const QString&, const QString&)> _lessThanVersionStringComparator;
+	const std::string _repoName;
+	const std::string _currentVersionString;
+	const std::function<bool(const std::string&, const std::string&)> _lessThanVersionStringComparator;
 
 	UpdateStatusListener* _listener = nullptr;
-
-	QNetworkAccessManager _networkManager;
 };
-

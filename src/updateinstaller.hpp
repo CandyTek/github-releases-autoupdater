@@ -1,9 +1,9 @@
 #pragma once
 
-class QString;
+#include <filesystem>
 
 namespace UpdateInstaller {
 
-bool install(const QString& downloadedUpdateFilePath);
+bool install(const std::filesystem::path& downloadedUpdateFilePath);
 
 } // namespace UpdateInstaller

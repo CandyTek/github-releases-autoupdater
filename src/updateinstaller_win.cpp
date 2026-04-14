@@ -1,8 +1,17 @@
 #include "updateinstaller.hpp"
 
-#include <QProcess>
+#include <Windows.h>
+#include <shellapi.h>
 
-bool UpdateInstaller::install(const QString& downloadedUpdateFilePath)
+bool UpdateInstaller::install(const std::filesystem::path& downloadedUpdateFilePath)
 {
-	return QProcess::startDetached('\"' + downloadedUpdateFilePath + '\"', {});
+	const HINSTANCE result = ShellExecuteW(
+		nullptr,
+		L"open",
+		downloadedUpdateFilePath.c_str(),
+		nullptr,
+		nullptr,
+		SW_SHOWNORMAL);
+
+	return reinterpret_cast<INT_PTR>(result) > 32;
 }
