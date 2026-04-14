@@ -45,7 +45,7 @@ public:
 
 private:
 	void notifyError(const std::string& errorMessage) const;
-	std::filesystem::path buildDownloadPath() const;
+	std::filesystem::path buildDownloadPath(const std::string& updateUrl) const;
 
 private:
 	const std::string _repoName;

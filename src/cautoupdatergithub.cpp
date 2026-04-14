@@ -25,7 +25,6 @@
 namespace {
 
 constexpr auto kUserAgent = L"github-releases-autoupdater/1.0";
-constexpr auto kUpdateFileExtension = L".exe";
 
 std::wstring utf8ToWide(std::string_view value)
 {
@@ -155,6 +154,25 @@ bool endsWithCaseInsensitive(std::string_view value, std::string_view suffix)
 	}
 
 	return true;
+}
+
+bool hasPreferredPortableAssetExtension(std::string_view value)
+{
+	return endsWithCaseInsensitive(value, ".zip");
+}
+
+bool hasSupportedInstallerExtension(std::string_view value)
+{
+	return endsWithCaseInsensitive(value, ".exe") || endsWithCaseInsensitive(value, ".msi");
+}
+
+std::wstring getDownloadFileExtension(std::string_view updateUrl)
+{
+	const auto queryPos = updateUrl.find('?');
+	const std::string_view normalized = queryPos == std::string_view::npos ? updateUrl : updateUrl.substr(0, queryPos);
+	const std::filesystem::path path(utf8ToWide(std::string(normalized)));
+	const std::wstring extension = path.extension().wstring();
+	return extension.empty() ? L".bin" : extension;
 }
 
 std::string formatIsoDate(std::string_view value)
@@ -715,15 +733,15 @@ CAutoUpdaterGithub::ChangeLog parseReleasesJson(
 		for (const JsonValue& assetValue : releaseValue.find("assets").asArray())
 		{
 			const std::string assetUrl = assetValue.find("browser_download_url").asString();
-			if (endsWithCaseInsensitive(assetUrl, ".exe"))
+			if (hasPreferredPortableAssetExtension(assetUrl))
 			{
 				downloadUrl = assetUrl;
 				break;
 			}
-		}
 
-		if (downloadUrl.empty())
-			downloadUrl = releaseValue.find("html_url").asString();
+			if (downloadUrl.empty() && hasSupportedInstallerExtension(assetUrl))
+				downloadUrl = assetUrl;
+		}
 
 		const std::string updateChanges = removeCarriageReturns(releaseValue.find("body").asString());
 		maddy::Parser markdownParser;
@@ -801,7 +819,7 @@ void CAutoUpdaterGithub::downloadAndInstallUpdate(const std::string& updateUrl)
 {
 	try
 	{
-		const std::filesystem::path downloadPath = buildDownloadPath();
+		const std::filesystem::path downloadPath = buildDownloadPath(updateUrl);
 		const HttpResponse response = httpGet(updateUrl, [this](std::uint64_t downloaded, std::uint64_t total) {
 			if (!_listener)
 				return;
@@ -846,7 +864,7 @@ void CAutoUpdaterGithub::notifyError(const std::string& errorMessage) const
 		_listener->onUpdateError(errorMessage);
 }
 
-std::filesystem::path CAutoUpdaterGithub::buildDownloadPath() const
+std::filesystem::path CAutoUpdaterGithub::buildDownloadPath(const std::string& updateUrl) const
 {
 	std::wstring buffer(MAX_PATH, L'\0');
 	DWORD size = GetTempPathW(static_cast<DWORD>(buffer.size()), buffer.data());
@@ -863,5 +881,5 @@ std::filesystem::path CAutoUpdaterGithub::buildDownloadPath() const
 
 	buffer.resize(size);
 	std::filesystem::path tempDirectory(buffer);
-	return tempDirectory / (getCurrentModuleStem() + std::wstring(kUpdateFileExtension));
+	return tempDirectory / (getCurrentModuleStem() + getDownloadFileExtension(updateUrl));
 }
