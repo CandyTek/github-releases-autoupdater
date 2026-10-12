@@ -35,6 +35,7 @@ target_compile_definitions(autoupdater
 )
 
 target_link_libraries(autoupdater PRIVATE
+    bcrypt
     shell32
     winhttp
 )

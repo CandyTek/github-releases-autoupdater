@@ -8,7 +8,8 @@
 - 解析 release 列表，找出比当前版本新的版本。
 - 从 release assets 里选择合适的更新包下载地址。
 - 下载更新包到系统临时目录。
-- 启动安装流程。
+- 校验下载内容的大小和 SHA-256（来自 GitHub API 的 asset `size` / `digest` 字段，哈希用 Windows CNG `bcrypt`）。
+- 校验通过后才启动安装流程；digest 缺失或不匹配一律报错并拒绝安装。
 
 ## CandyLauncher 当前接入方式
 

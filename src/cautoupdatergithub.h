@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -13,6 +14,11 @@ public:
 		std::string versionChanges;
 		std::string date;
 		std::string versionUpdateUrl;
+		// Lowercase hex SHA-256 of the asset, taken from the GitHub API "digest" field ("sha256:<hex>").
+		// Empty if GitHub did not report one; downloadAndInstallUpdate refuses to install in that case.
+		std::string versionUpdateSha256;
+		// Asset size in bytes as reported by the GitHub API, 0 if unknown.
+		std::uint64_t versionUpdateSize = 0;
 		bool isPrerelease = false;
 	};
 
@@ -41,7 +47,9 @@ public:
 	void setUpdateStatusListener(UpdateStatusListener* listener);
 
 	void checkForUpdates();
-	void downloadAndInstallUpdate(const std::string& updateUrl);
+	// Downloads entry.versionUpdateUrl, verifies its size and SHA-256 against the values GitHub reported
+	// for the asset, and only then launches the installer. A missing or mismatching digest is an error.
+	void downloadAndInstallUpdate(const VersionEntry& entry);
 
 private:
 	void notifyError(const std::string& errorMessage) const;

@@ -2,6 +2,7 @@
 #include "updateinstaller.hpp"
 
 #include <Windows.h>
+#include <bcrypt.h>
 #include <winhttp.h>
 
 #include "maddy/parser.h"
@@ -164,6 +165,86 @@ bool hasPreferredPortableAssetExtension(std::string_view value)
 bool hasSupportedInstallerExtension(std::string_view value)
 {
 	return endsWithCaseInsensitive(value, ".exe") || endsWithCaseInsensitive(value, ".msi");
+}
+
+// GitHub reports asset digests as "sha256:<64 lowercase hex chars>". Returns the hex part, or empty if absent/unsupported.
+std::string parseSha256Digest(std::string_view digest)
+{
+	constexpr std::string_view kPrefix = "sha256:";
+	if (digest.size() != kPrefix.size() + 64 || digest.substr(0, kPrefix.size()) != kPrefix)
+		return {};
+
+	std::string hex(digest.substr(kPrefix.size()));
+	for (char& ch : hex)
+	{
+		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+		const bool isHex = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+		if (!isHex)
+			return {};
+	}
+
+	return hex;
+}
+
+std::uint64_t parseUnsigned(std::string_view value)
+{
+	std::uint64_t result = 0;
+	const auto status = std::from_chars(value.data(), value.data() + value.size(), result);
+	return status.ec == std::errc{} && status.ptr == value.data() + value.size() ? result : 0;
+}
+
+struct BCryptAlgorithmHandle {
+	BCRYPT_ALG_HANDLE handle = nullptr;
+	~BCryptAlgorithmHandle()
+	{
+		if (handle)
+			BCryptCloseAlgorithmProvider(handle, 0);
+	}
+};
+
+struct BCryptHashHandle {
+	BCRYPT_HASH_HANDLE handle = nullptr;
+	~BCryptHashHandle()
+	{
+		if (handle)
+			BCryptDestroyHash(handle);
+	}
+};
+
+std::string computeSha256Hex(std::string_view data)
+{
+	BCryptAlgorithmHandle algorithm;
+	if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&algorithm.handle, BCRYPT_SHA256_ALGORITHM, nullptr, 0)))
+		throw std::runtime_error("Failed to open the SHA-256 provider.");
+
+	BCryptHashHandle hash;
+	if (!BCRYPT_SUCCESS(BCryptCreateHash(algorithm.handle, &hash.handle, nullptr, 0, nullptr, 0, 0)))
+		throw std::runtime_error("Failed to create the SHA-256 hash object.");
+
+	std::size_t offset = 0;
+	while (offset < data.size())
+	{
+		const std::size_t chunk = std::min<std::size_t>(data.size() - offset, 1u << 20);
+		auto* bytes = reinterpret_cast<PUCHAR>(const_cast<char*>(data.data() + offset));
+		if (!BCRYPT_SUCCESS(BCryptHashData(hash.handle, bytes, static_cast<ULONG>(chunk), 0)))
+			throw std::runtime_error("Failed to hash the downloaded update data.");
+		offset += chunk;
+	}
+
+	std::array<UCHAR, 32> digest{};
+	if (!BCRYPT_SUCCESS(BCryptFinishHash(hash.handle, digest.data(), static_cast<ULONG>(digest.size()), 0)))
+		throw std::runtime_error("Failed to finish the SHA-256 hash.");
+
+	static constexpr char kHexDigits[] = "0123456789abcdef";
+	std::string hex;
+	hex.reserve(digest.size() * 2);
+	for (const UCHAR byte : digest)
+	{
+		hex.push_back(kHexDigits[byte >> 4]);
+		hex.push_back(kHexDigits[byte & 0x0F]);
+	}
+
+	return hex;
 }
 
 std::wstring getDownloadFileExtension(std::string_view updateUrl)
@@ -729,18 +810,18 @@ CAutoUpdaterGithub::ChangeLog parseReleasesJson(
 		if (!lessThanVersion(currentVersion, updateVersion))
 			continue;
 
-		std::string downloadUrl;
+		const JsonValue* chosenAsset = nullptr;
 		for (const JsonValue& assetValue : releaseValue.find("assets").asArray())
 		{
-			const std::string assetUrl = assetValue.find("browser_download_url").asString();
+			const std::string& assetUrl = assetValue.find("browser_download_url").asString();
 			if (hasPreferredPortableAssetExtension(assetUrl))
 			{
-				downloadUrl = assetUrl;
+				chosenAsset = &assetValue;
 				break;
 			}
 
-			if (downloadUrl.empty() && hasSupportedInstallerExtension(assetUrl))
-				downloadUrl = assetUrl;
+			if (!chosenAsset && hasSupportedInstallerExtension(assetUrl))
+				chosenAsset = &assetValue;
 		}
 
 		const std::string updateChanges = removeCarriageReturns(releaseValue.find("body").asString());
@@ -748,13 +829,19 @@ CAutoUpdaterGithub::ChangeLog parseReleasesJson(
 		std::istringstream stream(updateChanges);
 		std::string htmlChanges = markdownParser.Parse(stream);
 
-		changelog.push_back({
-			updateVersion,
-			htmlChanges,
-			formatIsoDate(releaseValue.find("created_at").asString()),
-			downloadUrl,
-			releaseValue.find("prerelease").asBool()
-		});
+		CAutoUpdaterGithub::VersionEntry entry;
+		entry.versionString = updateVersion;
+		entry.versionChanges = htmlChanges;
+		entry.date = formatIsoDate(releaseValue.find("created_at").asString());
+		entry.isPrerelease = releaseValue.find("prerelease").asBool();
+		if (chosenAsset)
+		{
+			entry.versionUpdateUrl = chosenAsset->find("browser_download_url").asString();
+			entry.versionUpdateSha256 = parseSha256Digest(chosenAsset->find("digest").asString());
+			entry.versionUpdateSize = parseUnsigned(chosenAsset->find("size").asString());
+		}
+
+		changelog.push_back(std::move(entry));
 	}
 
 	return changelog;
@@ -815,10 +902,18 @@ void CAutoUpdaterGithub::checkForUpdates()
 	}
 }
 
-void CAutoUpdaterGithub::downloadAndInstallUpdate(const std::string& updateUrl)
+void CAutoUpdaterGithub::downloadAndInstallUpdate(const VersionEntry& entry)
 {
 	try
 	{
+		const std::string& updateUrl = entry.versionUpdateUrl;
+		if (updateUrl.empty())
+			throw std::runtime_error("The release does not contain a downloadable update package.");
+
+		// Refuse to install anything we cannot verify: the GitHub API publishes a SHA-256 digest for every asset.
+		if (entry.versionUpdateSha256.empty())
+			throw std::runtime_error("The release asset has no SHA-256 digest, refusing to install an unverified package.");
+
 		const std::filesystem::path downloadPath = buildDownloadPath(updateUrl);
 		const HttpResponse response = httpGet(updateUrl, [this](std::uint64_t downloaded, std::uint64_t total) {
 			if (!_listener)
@@ -833,6 +928,24 @@ void CAutoUpdaterGithub::downloadAndInstallUpdate(const std::string& updateUrl)
 			const float percentage = downloaded >= total ? 100.0f : static_cast<float>(downloaded * 100.0) / static_cast<float>(total);
 			_listener->onUpdateDownloadProgress(percentage);
 		});
+
+		if (response.body.empty())
+			throw std::runtime_error("The downloaded update package is empty.");
+
+		if (entry.versionUpdateSize != 0 && response.body.size() != entry.versionUpdateSize)
+		{
+			throw std::runtime_error(
+				"Downloaded update size mismatch: expected " + std::to_string(entry.versionUpdateSize)
+				+ " bytes, received " + std::to_string(response.body.size()) + " bytes.");
+		}
+
+		const std::string actualSha256 = computeSha256Hex(response.body);
+		if (actualSha256 != entry.versionUpdateSha256)
+		{
+			throw std::runtime_error(
+				"Downloaded update SHA-256 mismatch: expected " + entry.versionUpdateSha256
+				+ ", got " + actualSha256 + ". The package was not installed.");
+		}
 
 		std::ofstream file(downloadPath, std::ios::binary | std::ios::trunc);
 		if (!file)

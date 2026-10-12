@@ -9,7 +9,8 @@ The project is Windows-only and builds as a standard CMake project targeting MSV
   `_updater.setUpdateStatusListener(this);`
 3. Call `checkForUpdates()`
 4. The `onUpdateAvailable(CAutoUpdaterGithub::ChangeLog changelog)` callback will be called when the GitHub releases request completes. If any updates were found, the `changelog` vector will be non-empty. You can use its items to retrieve the update details. If it's empty, it means no updates are available.
-5. Call `downloadAndInstallUpdate()` to download the update and launch it.
+5. Call `downloadAndInstallUpdate(entry)` with the chosen `VersionEntry` to download the update and launch it.
+   The download is verified against the `size` and SHA-256 `digest` GitHub reports for the asset; a missing or mismatching digest is reported via `onUpdateError` and nothing is installed.
 
 # Building
 
