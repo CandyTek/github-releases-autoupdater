@@ -389,6 +389,18 @@ HttpResponse httpGet(std::string_view url, const std::function<void(std::uint64_
 	const DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
 	WinHttpSetOption(session, WINHTTP_OPTION_REDIRECT_POLICY, const_cast<DWORD*>(&redirectPolicy), sizeof(redirectPolicy));
 
+	// GitHub only accepts TLS 1.2+, but WinHTTP on Windows 7 negotiates TLS 1.0 by default.
+	// Ask for TLS 1.2/1.3 explicitly; older systems reject the 1.3 flag, so retry with 1.2 alone.
+	DWORD secureProtocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+#ifdef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
+	secureProtocols |= WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+#endif
+	if (!WinHttpSetOption(session, WINHTTP_OPTION_SECURE_PROTOCOLS, &secureProtocols, sizeof(secureProtocols)))
+	{
+		secureProtocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+		WinHttpSetOption(session, WINHTTP_OPTION_SECURE_PROTOCOLS, &secureProtocols, sizeof(secureProtocols));
+	}
+
 	WinHttpHandle connection(WinHttpConnect(session, host.c_str(), components.nPort, 0));
 	if (!connection)
 		throw std::runtime_error(getLastErrorMessage("Failed to connect to remote host"));
